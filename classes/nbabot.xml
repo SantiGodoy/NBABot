@@ -1,0 +1,57 @@
+<?xml version="1.0" encoding="UTF-8"?>
+
+<mule xmlns:scripting="http://www.mulesoft.org/schema/mule/scripting" xmlns:tracking="http://www.mulesoft.org/schema/mule/ee/tracking" xmlns:json="http://www.mulesoft.org/schema/mule/json" xmlns:http="http://www.mulesoft.org/schema/mule/http" xmlns:twitter="http://www.mulesoft.org/schema/mule/twitter" xmlns="http://www.mulesoft.org/schema/mule/core" xmlns:doc="http://www.mulesoft.org/schema/mule/documentation"
+	xmlns:spring="http://www.springframework.org/schema/beans" 
+	xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+	xsi:schemaLocation="http://www.springframework.org/schema/beans http://www.springframework.org/schema/beans/spring-beans-current.xsd
+http://www.mulesoft.org/schema/mule/core http://www.mulesoft.org/schema/mule/core/current/mule.xsd
+http://www.mulesoft.org/schema/mule/twitter http://www.mulesoft.org/schema/mule/twitter/current/mule-twitter.xsd
+http://www.mulesoft.org/schema/mule/http http://www.mulesoft.org/schema/mule/http/current/mule-http.xsd
+http://www.mulesoft.org/schema/mule/json http://www.mulesoft.org/schema/mule/json/current/mule-json.xsd
+http://www.mulesoft.org/schema/mule/ee/tracking http://www.mulesoft.org/schema/mule/ee/tracking/current/mule-tracking-ee.xsd
+http://www.mulesoft.org/schema/mule/scripting http://www.mulesoft.org/schema/mule/scripting/current/mule-scripting.xsd">
+    <twitter:config name="Twitter__Configuration" accessKey="" accessSecret="" consumerKey="" consumerSecret="" doc:name="Twitter: Configuration"/>
+    <http:request-config name="HTTP_Request_Configuration" protocol="HTTPS" host="api.mysportsfeeds.com" port="443" basePath="/v1.2/pull/nba/2017-2018-regular/cumulative_player_stats.json" doc:name="HTTP Request Configuration">
+        <http:basic-authentication username="" password=""/>
+    </http:request-config>
+    <flow name="nbabotFlow">
+        <poll doc:name="Poll">
+            <fixed-frequency-scheduler frequency="5" timeUnit="SECONDS"/>
+            <twitter:get-mentions-timeline config-ref="Twitter__Configuration" count="1" doc:name="Recibir menciones"/>
+        </poll>
+        <byte-array-to-object-transformer returnClass="twitter4j.ResponseList" doc:name="Byte Array to ResponseList"/>
+        <echo-component doc:name="Echo"/>
+        <idempotent-message-filter   doc:name="Tweet &#250;nico" idExpression="#[payload.get(0).getId()]" valueExpression="#[payload.get(0).getId()]">
+            <simple-text-file-store name="guardado" maxEntries="-1" directory="./objectstore"/>
+        </idempotent-message-filter>
+        <set-session-variable variableName="tweet" value="#[payload.get(0).getText()]" doc:name="Guardar tweet"/>
+        <set-variable variableName="payloadTwitter" value="#[payload]" doc:name="Guardar Payload"/>
+        <custom-transformer returnClass="java.lang.String" class="nbabot.TransformarTweet" doc:name="ResponseList to String"/>
+        <http:request config-ref="HTTP_Request_Configuration" path="/" method="GET" doc:name="Petici&#243;n API">
+            <http:request-builder>
+                <http:query-param paramName="player" value="#[payload]"/>
+                <http:query-param paramName="playerstats" value="Reb/g,pts/g,ast/g,stl/g,bs/g,min/g"/>
+            </http:request-builder>
+        </http:request>
+        <logger message="#[payload.toString()]" level="INFO" doc:name="Logger"/>
+        <json:json-to-object-transformer returnClass="nbabot.Datos" doc:name="JSON to Datos"/>
+        <echo-component doc:name="Echo"/>
+        <scripting:component doc:name="Groovy">
+            <scripting:script engine="Groovy"><![CDATA[if(payload.getCumulativeplayerstats().getPlayerstatsentry())
+	return payload;
+else
+	return null;]]></scripting:script>
+        </scripting:component>
+
+        <choice doc:name="Choice">
+            <when expression="#[!(payload  == null)]">
+                <custom-transformer returnClass="nbabot.Jugador" class="nbabot.DatosToJugador" doc:name="Datos To Jugador"/>
+
+                <twitter:update-status config-ref="Twitter__Configuration" status=" @#[flowVars.payloadTwitter.get(0).getUser().getScreenName()]   #[payload.toString()]" inReplyTo="#[flowVars.payloadTwitter.get(0).getId()]" doc:name="Petici&#243;n v&#225;lida"/>
+            </when>
+            <otherwise>
+                <twitter:update-status config-ref="Twitter__Configuration" status=" @#[flowVars.payloadTwitter.get(0).getUser().getScreenName()]   No s&#233; de qui&#233;n me hablas... http://gph.is/1lCbg4z" inReplyTo="#[flowVars.payloadTwitter.get(0).getId()]" doc:name="Petici&#243;n err&#243;nea"/>
+            </otherwise>
+        </choice>
+    </flow>
+</mule>
